@@ -4,6 +4,7 @@ const CEL_SIZE = 6;
 let PLAY_STATUS = 1;
 let TO_INJECT = [];
 let SHOW_GRID = true;
+let GEN_TIME = 100;
 
 function updateState(state) {
     const newState = [];
@@ -100,7 +101,7 @@ function tick(context, state) {
 
     window.requestAnimationFrame(() => {
         const lt = Date.now() - ts;
-        const rt = 100 - lt;
+        const rt = GEN_TIME - lt;
 
         setTimeout(() => {
             tick(context, newState);
@@ -148,6 +149,13 @@ function start(canvas, width = 100, height = 100) {
                         TO_INJECT.push([i, j]);
                     }
                 }
+            }
+        } else if (ev.keyCode == 107) {
+            GEN_TIME += 5;
+        } else  if (ev.keyCode == 109) {
+            GEN_TIME -= 5;
+            if (GEN_TIME < 0) {
+                GEN_TIME = 0;
             }
         }
 
