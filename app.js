@@ -11,6 +11,11 @@ let activeGrids = null;
 
 let state;
 
+const getId = (() => {
+    let last = 0;
+    return () => last++; 
+})();
+
 class Bitfield {
 
     constructor(size) {
@@ -30,6 +35,28 @@ class Bitfield {
         return !!(1 << (x % 32) & word);
     }
 
+    getRaw(s, f) {
+        let from = (s / 32)|0;
+        let to = (f / 32)|0;
+        let words = new Array(to - from);
+        let res = new Bitfield(f - s);
+
+        for (let i = from; i <= to; i++) {
+            words[i](this._buffer[i]);
+        }
+
+        for (let i = 0; i < f - s ; i++) {
+            const word = words[(i/32)|0];
+            res.set(i, !!(1 << (x % 31) & word));
+        }
+
+        return res;
+    }
+
+    getRawSel(xs, xf, ys, yf) {
+        
+    }
+
     set(x, val = true) {
         const oval = this._buffer[(x / 32)|0];
         const vb = val ? 4294967295 : 0;
@@ -43,6 +70,19 @@ class Bitfield {
     clone(buffer) {
         return new Bitfield(buffer);
     }
+
+    compare(d) {
+        let res = true;
+        for (let i = 0; i < this._buffer.length; i++) {
+            if (this._buffer[i] !== d._buffer[i]) {
+                res = false;
+                break;
+            }
+        }
+
+        return res;
+    }
+
 }
 
 class Board {
@@ -51,6 +91,7 @@ class Board {
         this._width = width;
         this._height = height;
         this._state = options.buffer || new Bitfield(width * height);
+        this._backBoard = null;
         if (!options.buffer) {
             this._state.clear();
         }
@@ -68,6 +109,14 @@ class Board {
         return this._height;
     }
 
+    get backBoard() {
+        if (!this._backBoard) {
+            this._backBoard = new Board(this.width, this.height);
+        }
+
+        return this._backBoard;
+    }
+
     get(x, y) {
         x = x < 0 ? this.width - 1 : x % this.width;
         y = y < 0 ? this.height - 1 : y % this.height;
@@ -83,8 +132,18 @@ class Board {
     }
 
     update(cb) {
-        const newBoard = new Board(this.width, this.height);
-        this._state = cb(newBoard).state;
+        this.backBoard.clear();
+        this._state = cb(this.backBoard).flip(this._state);
+    }
+
+    clear() {
+        this._state.clear();
+    }
+
+    flip(nstate) {
+        const astate = this._state;
+        this._state = nstate;
+        return astate;
     }
 
     map(cb) {
@@ -104,17 +163,31 @@ class Game {
         this._board = new Board(width, height);
         this._options = {
             celSize: 6,
-            speed: 100,
-            showGrid: true,
+            speed: 0,
+            showGrid: false,
+            debug: false,
             ...options,
         };
         this._state = 1;
         this._el.width = width * this._options.celSize;
         this._el.height = height * this._options.celSize;
+    
+        this.mingirds = [];
+        this._times = {
+            update: [],
+            iupdate: [],
+            mingrids: [],
+        };
+
+        this._generation = 0;
     }
 
     get board() {
         return this._board;
+    }
+
+    get generation() {
+        return this._generation;
     }
 
     get context() {
@@ -124,33 +197,128 @@ class Game {
         return this._options.context;
     }
 
-    update() {
-        if (this._state !== 1) {
+    update(force = false) {
+        if (!force && this._state !== 1) {
             return;
         }
 
+        const uts = Date.now();
+
         this.board.update((newState) => {
-            this.board.map((x, y, state) => {
-                const lives = [
-                    this.board.get(x - 1, y - 1),
-                    this.board.get(x - 1, y),
-                    this.board.get(x - 1, y + 1),
-                    this.board.get(x, y - 1),
-                    this.board.get(x, y + 1),
-                    this.board.get(x +  1, y - 1),
-                    this.board.get(x + 1, y),
-                    this.board.get(x + 1, y + 1),
-                ]
-                    .reduce((t, cel) => t += cel ? 1 : 0, 0);
+            const ist = Date.now();
+            const mingirds = [...this.mingirds];
+            let itr = 0;
+            this.mingirds = [];
 
-                if (state ? lives > 1 && lives < 4 : lives === 3) {
-                    newState.set(x, y);
-                }
+            if (!mingirds.length) {
+                mingirds.push([0, 0, this.board.width, 0, this.board.height, this.board.width, this.board.height]);
+            }
 
-            });
+            for (const [mgid, fw, tw, fh, th] of mingirds) {
+                for (let x = fw; x <= tw; x++) {
+                    for (let y = fh; y <= th; y++) {
+                        itr++;
+                        let state = this.board.get(x, y);
+
+                        const lives = [
+                            this.board.get(x - 1, y - 1),
+                            this.board.get(x - 1, y),
+                            this.board.get(x - 1, y + 1),
+                            this.board.get(x, y - 1),
+                            this.board.get(x, y + 1),
+                            this.board.get(x +  1, y - 1),
+                            this.board.get(x + 1, y),
+                            this.board.get(x + 1, y + 1),
+                        ]
+                            .reduce((t, cel) => t += cel ? 1 : 0, 0);
+                    
+                        state = state ? lives > 1 && lives < 4 : lives === 3;
+
+                        if (state) {
+                            newState.set(x, y);
+                            const sts = Date.now();
+                            let mgxf = x - 1;
+                            let mgxt = x + 1;
+                            let mgyf = y - 1;
+                            let mgyt = y + 1;
+
+                            if (mgxf < 0 || mgxt > this.board.width) {
+                                mgxf = 0;
+                                mgxt = this.board.width;
+                            }
+
+                            if (mgyf < 0 || mgyt > this.board.height) {
+                                mgyf = 0;
+                                mgyt = this.board.height;
+                            }
+
+                            const mgxw = mgxt - mgxf;
+                            const mgyw = mgyt - mgyf;
+                            
+                            const ags = this.mingirds
+                                .filter(([t, mwf, mwt, mhf, mht, w, h]) =>
+                                    mgxf <= mwf + w &&
+                                    mgxf + mgxw >= mwf &&
+                                    mgyf <= mhf + h &&
+                                    mgyw + mgyf >= mhf
+                                )
+                            ;
+
+                            if (ags.length) {
+                                const agsids = ags.map(([x]) => x);
+                                this.mingirds = this.mingirds.filter(([mid]) => !agsids.includes(mid));
+                                const nmg = [...ags, [0, mgxf, mgxt, mgyf, mgyt]]
+                                    .reduce(([aid, axf, axt, ayf, ayt], [cid, cxf, cxt, cyf, cyt]) => [
+                                        aid,
+                                        cxf < axf ? cxf : axf,
+                                        cxt > axt ? cxt : axt,
+                                        cyf < ayf ? cyf : ayf,
+                                        cyt > ayt ? cyt : ayt,
+                                        0,
+                                        0,
+                                    ], [getId(), this.board.width, 0, this.board.height, 0, 0, 0])
+                                ;
+                                nmg[5] = nmg[2] - nmg[1];
+                                nmg[6] = nmg[4] - nmg[3];
+                                this.mingirds.push(nmg);   
+                            } else {
+                                this.mingirds.push([
+                                    getId(),
+                                    mgxf,
+                                    mgxt,
+                                    mgyf,
+                                    mgyt,
+                                    mgxw,
+                                    mgyw,
+                                ]);
+                            } // if
+
+                            const now = Date.now();
+                            this._times.mingrids.push([now, now - sts]);
+                            if (this._times.mingrids.length > 100) {
+                                this._times.mingrids.shift();
+                            }
+                        } // if
+                    } // y
+                }// x
+            } // m
+
+            this._times.iupdate.push([0, itr]);
+
+            if (this._times.iupdate.length > 10) {
+                this._times.iupdate.shift();
+            }
 
             return newState;
         });
+
+        this._generation++;
+        const now = Date.now();
+        this._times.update.push([now, now - uts]);
+
+        if (this._times.update.length > 100) {
+            this._times.update.shift();
+        }
     }
 
     drawBoard() {
@@ -162,6 +330,18 @@ class Game {
             this.board.height * this._options.celSize,
         );
         this.context.stroke();
+    }
+
+    drawMingrids() {
+        for (const [id, fx, tx, fy, ty, w, h] of this.mingirds) {
+            const {celSize} = this._options;
+            const px = (fx * celSize) + 1;
+            const py = (fy * celSize) + 1;
+            const pw = (celSize * (w+1)) - 2;
+            const ph = (celSize * (h+1)) - 2;
+            this.context.fillStyle = 'green';
+            this.context.fillRect(px, py, pw, ph);
+        }
     }
 
     clearBoard() {
@@ -189,8 +369,11 @@ class Game {
                 this.context.lineTo((height * celSize) -1, i * celSize);
             }
 
-            this.context.stroke();
+            this.context.closePath();
+
         }
+
+        this.context.stroke();
     }
 
     drawCel(x, y) {
@@ -204,9 +387,25 @@ class Game {
 
     render() {
         this.clearBoard();
-        this.board.map((x, y, val) => {
-            if (val) this.drawCel(x, y);
-        });
+        if (this._options.debug) {
+            this.drawMingrids();
+        }
+
+        const mingirds = [...this.mingirds];
+
+        if (!mingirds.length) {
+            mingirds.push([0, 0, this.board.width, 0, this.board.height, this.board.width, this.board.height]);
+        }
+
+        for (const [mgid, fw, tw, fh, th] of mingirds) {
+            for (let x = fw; x <= tw; x++) {
+                for (let y = fh; y <= th; y++) {
+                    if (this.board.get(x, y)) this.drawCel(x, y);
+                }
+            }
+        };
+
+        this.context.stroke();
     }
 
     asyncLoop() {
@@ -248,6 +447,17 @@ class Game {
     toggleCel(x, y) {
         const val = this.board.get(x, y);
         this.board.set(x, y, !val);
+        this.mingirds = [];
+    }
+
+    getTimes() {
+        return Object.keys(this._times)
+            .map((k) => [k, this._times[k]])
+            .map(([k, times]) => [
+                k,
+                times.reduce((t, [, x]) => t += x, 0) / times.length,
+            ])
+        ;
     }
 }
 
@@ -282,67 +492,106 @@ class GameControll {
         });
 
         window.addEventListener('keyup', (ev) => {
+            console.log(ev.keyCode);
             if (ev.keyCode == 32) {
                 this.game.togglePause();
             } else if (ev.keyCode == 77) {
                 this.game._options.showGrid = !this.game._options.showGrid;
+            } else if (ev.keyCode == 39) {
+                this.game.update(true);
+            } else if (ev.keyCode == 68) {
+                this.game._options.debug = !this.game._options.debug;
             }
         });
     }
 
 }
 
+class GameStats {
+    constructor(el, game) {
+        this._el = document.getElementById(el);
+        this._game = game;
+        this._interval = null;
+    }
+
+    update() {
+        const times = this._game.getTimes();
+        const gen = this._game.generation;
+
+        const ticks = times.find(([name]) => name === 'update');
+        const iticks = times.find(([name]) => name === 'iupdate');
+        const mgrids = times.find(([name]) => name === 'mingrids');
+
+        this._el.querySelector('#gen').innerText = `${gen}`;
+        this._el.querySelector('#ticks').innerText = `${ticks[1].toFixed(2)}`;
+        this._el.querySelector('#iticks').innerText = `${iticks[1].toFixed(2)}`;
+        this._el.querySelector('#mgrids').innerText = `${mgrids[1].toFixed(2)}`;
+    }
+
+    stopLoop() {
+        clearInterval(this._interval);
+    }
+
+    startLoop() {
+        this.stopLoop();
+        this._interval = setInterval(() => {
+            this.update();
+        }, 500);
+    }
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     window.game = new Game('screen', 150, 150);
     window.game.start();
     window.gameController = new GameControll(window.game);
     window.gameController.subscribeEvents();
+    window.gamestats = new GameStats('lcd', window.game);
+    window.gamestats.startLoop();
 });
 
 
-    /*
+/*
 function serialize(state) {
-    const [width, height] = [state.length, state[0].length];
-    const total = width * height;
-    const hex = (v) => (`0${v.toString(16)}`).substr(-2);
-    let result = [];
+const [width, height] = [state.length, state[0].length];
+const total = width * height;
+const hex = (v) => (`0${v.toString(16)}`).substr(-2);
+let result = [];
 
-    const coords = (x) => [
-        x % width,
-        (x / height)|0,
-    ];
+const coords = (x) => [
+    x % width,
+    (x / height)|0,
+];
 
-    for (let i = 0; i < total; i++) {
-        const [x, y] = coords(i);
-        if (state[x][y]) {
-            result.push([x,y]);
-        }
+for (let i = 0; i < total; i++) {
+    const [x, y] = coords(i);
+    if (state[x][y]) {
+        result.push([x,y]);
     }
+}
 
-    return hex(width) + hex(height) + result.map(([x,y]) => hex(x) + hex(y)).join('');
+return hex(width) + hex(height) + result.map(([x,y]) => hex(x) + hex(y)).join('');
 }
 
 function unserialize(serialized) {
-    const blocks = serialized
-        .match(/.{2}/g)
-        .map((x) => parseInt(x, 16));
+const blocks = serialized
+    .match(/.{2}/g)
+    .map((x) => parseInt(x, 16));
 
-    const width = blocks.shift();
-    const height = blocks.shift();
-    const newState = new Array(width);
+const width = blocks.shift();
+const height = blocks.shift();
+const newState = new Array(width);
 
-    for (let i = 0; i < width; i++) {
-        newState[i] = new Array(height);
-        for (let j = 0; j < height; j++) {
-            newState[i][j] = 0;
-        }
+for (let i = 0; i < width; i++) {
+    newState[i] = new Array(height);
+    for (let j = 0; j < height; j++) {
+        newState[i][j] = 0;
     }
+}
 
-    for (let i = 0; i < blocks.length; i+=2) {
-        newState[i][i+1] = true;
-    }
+for (let i = 0; i < blocks.length; i+=2) {
+    newState[i][i+1] = true;
+}
 
-    return newState;
+return newState;
 }
 */
